@@ -26,16 +26,33 @@ const minTokensForCompaction = 4096
 type SkillApprover func(ctx context.Context, skillName string, args map[string]any) bool
 
 // MonitorEvent 描述一次 Agent 事件，供 MonitorFunc 消费。
+//
+// 各 Type 事件说明：
+//
+//	"request"  — 用户发送消息后触发。
+//	             有值字段: ReqID, Content（用户输入文本）
+//
+//	"reply"    — LLM 返回完整回复后触发。
+//	             有值字段: ReqID, Content（AI 回复文本）
+//
+//	"tool_call"— 技能执行完成后触发（无论成功或失败）。
+//	             有值字段: ToolName（技能名）, ToolArgs（参数 JSON）, ToolResult（执行结果文本）
+//
+//	"error"    — 对话流程中发生错误时触发。
+//	             有值字段: ReqID, Error（具体错误）
+//
+//	"cancelled"— 请求被取消模式终止时触发（当前由 sendInternal 注释掉，未实际发送）。
+//	             有值字段: ReqID
 type MonitorEvent struct {
-	Type       string    // "request" | "reply" | "tool_call" | "error" | "cancelled"
-	UserID     string    // 用户 ID
-	ReqID      int64     // 请求序号
-	Content    string    // 用户输入或 AI 回复文本
-	ToolName   string    // tool_call 时的技能名
-	ToolArgs   string    // tool_call 时的参数 JSON
-	ToolResult string    // tool_call 时的执行结果
-	Error      error     // error 时的错误
-	Timestamp  time.Time // 事件时间
+	Type       string    // 事件类型，取值: "request" | "reply" | "tool_call" | "error" | "cancelled"
+	UserID     string    // 用户 ID（当前未使用，预留字段）
+	ReqID      int64     // 请求序号，Agent 内自增，每次 Send 调用递增
+	Content    string    // request / reply 事件的消息文本
+	ToolName   string    // tool_call 事件：被调用的技能名称
+	ToolArgs   string    // tool_call 事件：LLM 传入的 JSON 参数字符串
+	ToolResult string    // tool_call 事件：技能执行返回的文本结果
+	Error      error     // error 事件：具体错误对象
+	Timestamp  time.Time // 事件发生时间，为零值时 MonitorFunc 内自动补为 time.Now()
 }
 
 // MonitorFunc 监控回调。Agent 在所有关键事件发生时调用，无返回值。
@@ -331,11 +348,11 @@ func (a *Agent) executeToolCall(ctx context.Context, tc ToolCall) string {
 	}
 
 	// 2. MCP 技能
-	mcpURL, found := a.findMCPTool(tc.Function.Name)
+	mcpInfo, found := a.findMCPTool(tc.Function.Name)
 	if !found {
 		return fmt.Sprintf("错误：未知技能 %s", tc.Function.Name)
 	}
-	result, err := a.mcpToolCall(ctx, mcpURL, tc.Function.Name, args)
+	result, err := a.mcpToolCall(ctx, mcpInfo, tc.Function.Name, args)
 	if err != nil {
 		return fmt.Sprintf("错误：MCP 调用失败: %v", err)
 	}
